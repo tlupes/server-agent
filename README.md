@@ -82,13 +82,18 @@ candidate revision's isolated trial state before that revision is installed.
 
 | Duty | Schedule | Behavior |
 | --- | --- | --- |
-| Filesystem capacity | Every 5 minutes | Checks local filesystem space and inodes. Alerts escalate at 80%, 90%, and 95%, and clear after recovery. |
+| Filesystem capacity | Every 5 minutes | Checks local filesystem space and inodes. At 80% it cleans policy-managed temporary files and APT caches; at 90% it also removes dangling Docker images, old build cache, and journals older than 30 days; at 95% it removes unused build cache older than one day and limits archived journals to seven days/500 MB. Alerts reflect the usage remaining after cleanup. |
 | Docker health | Every 5 minutes | Reports an unavailable daemon, stopped containers, and unhealthy health checks. Set the `server-agent.healthcheck=ignore` label to exclude an intentional stopped container. |
 | Host health | Every 5 minutes | Checks normalized load, available memory, swap usage, and Linux thermal zones. |
 | Disk health | Daily | Runs SMART health checks against disks discovered by `smartctl`. RAID monitoring is intentionally not included. |
 | Image updates | Every Tuesday | Pulls images and recreates Docker Compose projects. It fails safely when unmanaged containers are present because they cannot be recreated reliably from image metadata alone. |
-| Security updates | Daily | Refreshes APT metadata and applies updates permitted by the host's `unattended-upgrades` policy. Reports whether a reboot is required. |
+| Security updates | Daily | Waits up to ten minutes for APT list, archive, and dpkg locks, retries lock races, refreshes metadata with network retries, and applies updates permitted by the host's `unattended-upgrades` policy. Reports whether a reboot is required. |
 
 Image and package duties perform dependency checks, but do not mutate the host
 during candidate-revision trials. The systemd service allows up to two hours
 for a run, while each duty retains its own shorter timeout.
+
+Filesystem cleanup is intentionally conservative: it never removes Docker
+volumes, stopped containers, images referenced by containers, arbitrary files
+from temporary directories, or active journal files. Temporary-file removal is
+delegated to the host's `systemd-tmpfiles` retention policies.
