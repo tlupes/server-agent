@@ -72,9 +72,20 @@ grep -q "Server agent updated" "$NOTIFICATION_FILE" ||
 [[ ! -d "$STATE/update-worktree" ]] ||
     fail "the successful update worktree was not removed"
 
-sed -i '/run_duties() {/a\    printf "Intentional trial failure.\\n" >&2\n    return 42' \
-    "$SOURCE/server-agent.sh"
-git -C "$SOURCE" add server-agent.sh
+cat >"$SOURCE/duties/healthy.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'Healthy duty output that must not appear in the failure notification.\n'
+EOF
+cat >"$SOURCE/duties/broken.sh" <<'EOF'
+#!/usr/bin/env bash
+printf 'Intentional trial failure.\n' >&2
+exit 42
+EOF
+cat >"$SOURCE/duties/registry.sh" <<'EOF'
+register_duty "healthy-check" 300 "5s" "never" "$SCRIPT_DIR/duties/healthy.sh"
+register_duty "broken-check" 300 "5s" "never" "$SCRIPT_DIR/duties/broken.sh"
+EOF
+git -C "$SOURCE" add duties
 git -C "$SOURCE" commit --quiet -m "Broken update"
 git -C "$SOURCE" push --quiet
 
@@ -96,6 +107,13 @@ fi
     fail "the prior successful update was unexpectedly rolled back"
 grep -q "failed its trial run" "$NOTIFICATION_FILE" ||
     fail "the failed-update notification was not sent"
+grep -q "Failed duties:" "$NOTIFICATION_FILE" ||
+    fail "the failed-update notification did not identify its duty list"
+grep -q -- "- broken-check" "$NOTIFICATION_FILE" ||
+    fail "the failed-update notification did not list the failed duty"
+if grep -q "healthy-check" "$NOTIFICATION_FILE"; then
+    fail "the failed-update notification included a successful duty"
+fi
 [[ ! -d "$STATE/update-worktree" ]] ||
     fail "the failed update worktree was not removed"
 

@@ -13,6 +13,8 @@ fi
 
 mkdir -p "$JOURNAL_STATE_DIR"
 journal_args=(--dmesg --no-pager --output=short-iso --show-cursor)
+previous_cursor=""
+used_fallback=0
 if [[ -s "$CURSOR_FILE" ]]; then
     read -r previous_cursor <"$CURSOR_FILE"
     journal_args+=(--after-cursor "$previous_cursor")
@@ -22,6 +24,7 @@ fi
 
 if ! journal_output=$(journalctl "${journal_args[@]}" 2>&1); then
     if [[ -s "$CURSOR_FILE" ]]; then
+        used_fallback=1
         journal_output=$(journalctl --dmesg --no-pager --output=short-iso \
             --show-cursor --since "10 minutes ago" 2>&1) || {
             printf 'Unable to read the kernel journal:\n%s\n' "$journal_output" >&2
@@ -34,17 +37,17 @@ if ! journal_output=$(journalctl "${journal_args[@]}" 2>&1); then
 fi
 
 cursor=$(sed -n 's/^-- cursor: //p' <<<"$journal_output" | tail -n 1)
-if [[ -z "$cursor" ]]; then
-    printf 'journalctl did not return a cursor; kernel events cannot be checkpointed safely.\n' >&2
-    exit 1
+if [[ -n "$cursor" ]]; then
+    temporary_cursor=$(mktemp "$JOURNAL_STATE_DIR/journal.cursor.XXXXXX") || {
+        printf 'Unable to create a temporary kernel-journal cursor.\n' >&2
+        exit 1
+    }
+    printf '%s\n' "$cursor" >"$temporary_cursor"
+    mv -f "$temporary_cursor" "$CURSOR_FILE"
+elif ((used_fallback == 1)); then
+    rm -f "$CURSOR_FILE"
+    previous_cursor=""
 fi
-
-temporary_cursor=$(mktemp "$JOURNAL_STATE_DIR/journal.cursor.XXXXXX") || {
-    printf 'Unable to create a temporary kernel-journal cursor.\n' >&2
-    exit 1
-}
-printf '%s\n' "$cursor" >"$temporary_cursor"
-mv -f "$temporary_cursor" "$CURSOR_FILE"
 
 journal_entries=$(sed '/^-- cursor: /d' <<<"$journal_output")
 matches=$(grep -Ei "$ERROR_PATTERN" <<<"$journal_entries" || true)
@@ -53,4 +56,8 @@ if [[ -n "$matches" ]]; then
     exit 1
 fi
 
-printf 'No new kernel or filesystem errors were detected.\n'
+if [[ -z "$cursor" && -z "$previous_cursor" ]]; then
+    printf 'No kernel or filesystem errors were detected in the last ten minutes; no journal cursor was available yet.\n'
+else
+    printf 'No new kernel or filesystem errors were detected.\n'
+fi

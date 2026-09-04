@@ -252,10 +252,18 @@ cat >"$BIN_DIR/journalctl" <<'EOF'
 #!/usr/bin/env bash
 printf 'journalctl %s\n' "$*" >>"$COMMAND_LOG"
 [[ -n "${KERNEL_JOURNAL:-}" ]] && printf '%s\n' "$KERNEL_JOURNAL"
-printf '%s\n' '-- cursor: test-cursor'
+[[ "${OMIT_JOURNAL_CURSOR:-0}" == "1" ]] ||
+    printf '%s\n' '-- cursor: test-cursor'
 EOF
 
 kernel_state="$TEST_ROOT/kernel-state"
+: >"$COMMAND_LOG"
+OMIT_JOURNAL_CURSOR=1 KERNEL_JOURNAL='' \
+SERVER_AGENT_STATE_DIR="$kernel_state" expect_status 0 \
+    bash "$PROJECT_ROOT/duties/kernel-filesystem-errors.sh"
+grep -q "no journal cursor was available yet" "$OUTPUT_FILE" ||
+    fail "an empty first journal scan without a cursor was treated as a failure"
+
 : >"$COMMAND_LOG"
 KERNEL_JOURNAL='Sep 04 kernel: EXT4-fs error (device sda2): test failure' \
 SERVER_AGENT_STATE_DIR="$kernel_state" expect_status 1 \

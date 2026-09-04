@@ -13,6 +13,7 @@ readonly NTFY_TIMEOUT="${SERVER_AGENT_NTFY_TIMEOUT:-15}"
 readonly UPDATE_WORKTREE="$STATE_DIR/update-worktree"
 readonly DUTY_STATE_DIR="$STATE_DIR/duties"
 readonly DUTY_REGISTRY="${SERVER_AGENT_DUTY_REGISTRY:-$SCRIPT_DIR/duties/registry.sh}"
+readonly TRIAL_FAILURE_MARKER="SERVER_AGENT_FAILED_DUTY:"
 
 declare -a DUTY_NAMES=()
 declare -A DUTY_CADENCES=()
@@ -336,10 +337,34 @@ run_duties() {
     for name in "${DUTY_NAMES[@]}"; do
         if ! run_duty "$name"; then
             failures=$((failures + 1))
+            if [[ "${SERVER_AGENT_TRIAL:-0}" == "1" ]]; then
+                printf '%s%s\n' "$TRIAL_FAILURE_MARKER" "$name" >&2
+            fi
         fi
     done
 
     ((failures == 0))
+}
+
+trial_failure_details() {
+    local output_file=$1
+    local name
+    local -a failed_duties=()
+
+    mapfile -t failed_duties < <(
+        sed -n "s/^${TRIAL_FAILURE_MARKER}//p" "$output_file" |
+            awk 'NF && !seen[$0]++'
+    )
+
+    if ((${#failed_duties[@]} == 0)); then
+        tail -c 3000 "$output_file"
+        return
+    fi
+
+    printf 'Failed duties:\n'
+    for name in "${failed_duties[@]}"; do
+        printf -- '- %s\n' "$name"
+    done
 }
 
 repo_git() {
@@ -450,7 +475,7 @@ Path: $UPDATE_WORKTREE}"
     }
 
     if ! run_trial_revision "$output_file"; then
-        failure_details=$(tail -c 3000 "$output_file")
+        failure_details=$(trial_failure_details "$output_file")
         rm -f "$output_file"
         remove_update_worktree
         trap - EXIT
