@@ -28,6 +28,8 @@ notify() {
 date() {
     if [[ "${1:-}" == "+%u" && -n "${TEST_WEEKDAY:-}" ]]; then
         printf '%s\n' "$TEST_WEEKDAY"
+    elif [[ "${1:-}" == "+%H:%M" && -n "${TEST_TIME:-}" ]]; then
+        printf '%s\n' "$TEST_TIME"
     else
         command date "$@"
     fi
@@ -129,6 +131,23 @@ TEST_WEEKDAY=2 run_duties
 TEST_WEEKDAY=2 run_duties
 [[ "$(cat "$DUTY_TEST_COUNT")" == "$((weekly_count + 1))" ]] ||
     fail "a weekly duty ran twice on the same Tuesday"
+
+cat >"$SERVER_AGENT_DUTY_REGISTRY" <<EOF
+register_duty "scheduled-check" "daily-at-02:00" "5s" "never" "$TEST_ROOT/success.sh"
+EOF
+scheduled_count=$(cat "$DUTY_TEST_COUNT")
+TEST_TIME=01:59 run_duties
+[[ "$(cat "$DUTY_TEST_COUNT")" == "$scheduled_count" ]] ||
+    fail "a 02:00 duty ran before its scheduled hour"
+TEST_TIME=02:03 run_duties
+[[ "$(cat "$DUTY_TEST_COUNT")" == "$((scheduled_count + 1))" ]] ||
+    fail "a 02:00 duty did not run during its scheduled hour"
+TEST_TIME=02:10 run_duties
+[[ "$(cat "$DUTY_TEST_COUNT")" == "$((scheduled_count + 1))" ]] ||
+    fail "a scheduled daily duty ran twice on the same day"
+TEST_TIME=03:00 SERVER_AGENT_FORCE_DUTIES=1 run_duties
+[[ "$(cat "$DUTY_TEST_COUNT")" == "$((scheduled_count + 2))" ]] ||
+    fail "a candidate trial could not force a scheduled duty"
 
 cat >"$SERVER_AGENT_DUTY_REGISTRY" <<EOF
 register_duty "invalid-check" 0 "5s" "never" "$TEST_ROOT/success.sh"

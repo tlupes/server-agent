@@ -56,7 +56,7 @@ invocations.
 `run_duties` dispatches standalone scripts declared in `duties/registry.sh`.
 Each registration supplies a unique name, cadence, GNU `timeout` duration,
 notification policy, and handler path. Cadences may be a number of seconds,
-`daily`, or `weekly-<weekday>`:
+`daily`, `daily-at-HH:MM`, or `weekly-<weekday>`:
 
 ```bash
 register_duty \
@@ -92,6 +92,8 @@ candidate revision's isolated trial state before that revision is installed.
 | Disk health | Daily | Runs SMART health checks against disks discovered by `smartctl`. RAID monitoring is intentionally not included. |
 | Image updates | Every Tuesday | Pulls images and recreates Docker Compose projects. It fails safely when unmanaged containers are present because they cannot be recreated reliably from image metadata alone. |
 | Security updates | Daily | Waits up to ten minutes for APT list, archive, and dpkg locks, retries lock races, refreshes metadata with network retries, and applies updates permitted by the host's `unattended-upgrades` policy. Reports whether a reboot is required. |
+| Reboot required | Daily during the 02:00 hour | If `/var/run/reboot-required` exists, sends a high-priority ntfy notification and then invokes `systemctl reboot`. A failed notification cancels the reboot. Missed 02:00-hour windows wait until the next day. |
+| Weekly host report | Sundays | Reports uptime, load, root usage, memory, Docker container/storage summaries, failed duties, and reboot state through ntfy. |
 
 Image and package duties perform dependency checks, but do not mutate the host
 during candidate-revision trials. The systemd service allows up to two hours

@@ -95,6 +95,7 @@ register_duty() {
     fi
     if [[ ! "$cadence_seconds" =~ ^[1-9][0-9]*$ &&
         "$cadence_seconds" != "daily" &&
+        ! "$cadence_seconds" =~ ^daily-at-([01][0-9]|2[0-3]):[0-5][0-9]$ &&
         ! "$cadence_seconds" =~ ^weekly-(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$ ]]; then
         log "Duty '$name' has an invalid cadence: $cadence_seconds"
         DUTY_REGISTRY_ERRORS=$((DUTY_REGISTRY_ERRORS + 1))
@@ -178,6 +179,21 @@ weekday_number() {
     esac
 }
 
+daily_time_is_due() {
+    local schedule=$1
+    local target_time=${schedule#daily-at-}
+    local current_time target_hour target_minute current_hour current_minute
+
+    current_time=$(date +%H:%M)
+    target_hour=${target_time%:*}
+    target_minute=${target_time#*:}
+    current_hour=${current_time%:*}
+    current_minute=${current_time#*:}
+
+    [[ "$current_hour" == "$target_hour" ]] &&
+        ((10#$current_minute >= 10#$target_minute))
+}
+
 duty_is_due() {
     local name=$1
     local last_run_file="$DUTY_STATE_DIR/$name.last-run"
@@ -191,6 +207,10 @@ duty_is_due() {
             [[ "$weekday" == "$scheduled_weekday" ]]
             return
         fi
+        if [[ "$cadence" == daily-at-* && "${SERVER_AGENT_FORCE_DUTIES:-0}" != "1" ]]; then
+            daily_time_is_due "$cadence"
+            return
+        fi
         return 0
     fi
 
@@ -202,6 +222,12 @@ duty_is_due() {
 
     case "$cadence" in
         daily)
+            today=$(date +%F)
+            last_run_day=$(date --date="@$last_run" +%F) || return 0
+            [[ "$today" != "$last_run_day" ]]
+            ;;
+        daily-at-*)
+            daily_time_is_due "$cadence" || return 1
             today=$(date +%F)
             last_run_day=$(date --date="@$last_run" +%F) || return 0
             [[ "$today" != "$last_run_day" ]]

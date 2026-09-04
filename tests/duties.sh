@@ -49,6 +49,12 @@ grep -q 'register_duty "kernel-filesystem-errors" 300 "30s"' \
 grep -q 'register_duty "network-mounts" 300 "4m" "on-failure-recovery"' \
     "$PROJECT_ROOT/duties/registry.sh" ||
     fail "the network-mount duty does not retry every five minutes"
+grep -q 'register_duty "reboot-required" "daily-at-02:00" "2m" "on-failure"' \
+    "$PROJECT_ROOT/duties/registry.sh" ||
+    fail "the reboot duty is not scheduled for 02:00"
+grep -q 'register_duty "weekly-host-report" "weekly-sunday" "2m" "always"' \
+    "$PROJECT_ROOT/duties/registry.sh" ||
+    fail "the weekly host report is not scheduled for Sunday"
 
 cat >"$BIN_DIR/apt-get" <<'EOF'
 #!/usr/bin/env bash
@@ -311,7 +317,10 @@ cat >"$BIN_DIR/stat" <<'EOF'
 EOF
 cat >"$BIN_DIR/mkdir" <<'EOF'
 #!/usr/bin/env bash
-exit 0
+if [[ "$*" == *"/hillbox"* ]]; then
+    exit 0
+fi
+command -p mkdir "$@"
 EOF
 
 rm -f "$TEST_ROOT/network-mounted"
@@ -337,5 +346,54 @@ NETWORK_MOUNT_FAIL=1 SERVER_AGENT_TRIAL=1 expect_status 0 \
     bash "$PROJECT_ROOT/duties/network-mounts.sh"
 [[ ! -s "$COMMAND_LOG" ]] ||
     fail "a candidate trial attempted to change network mounts"
+
+cat >"$BIN_DIR/curl" <<'EOF'
+#!/usr/bin/env bash
+printf 'curl %s\n' "$*" >>"$COMMAND_LOG"
+cat <&4 >>"$COMMAND_LOG"
+printf '\n' >>"$COMMAND_LOG"
+EOF
+cat >"$BIN_DIR/systemctl" <<'EOF'
+#!/usr/bin/env bash
+printf 'systemctl %s\n' "$*" >>"$COMMAND_LOG"
+EOF
+
+reboot_required="$TEST_ROOT/reboot-required"
+reboot_packages="$TEST_ROOT/reboot-required.pkgs"
+printf 'linux-image-test\nlibc-test\n' >"$reboot_packages"
+touch "$reboot_required"
+
+: >"$COMMAND_LOG"
+NTFY_URL=https://ntfy.invalid/test \
+SERVER_AGENT_REBOOT_REQUIRED_FILE="$reboot_required" \
+SERVER_AGENT_REBOOT_PACKAGES_FILE="$reboot_packages" \
+SERVER_AGENT_TRIAL=1 expect_status 0 \
+    bash "$PROJECT_ROOT/duties/reboot-required.sh"
+[[ ! -s "$COMMAND_LOG" ]] ||
+    fail "a candidate trial sent a reboot notification or requested a reboot"
+
+: >"$COMMAND_LOG"
+NTFY_URL=https://ntfy.invalid/test \
+SERVER_AGENT_REBOOT_REQUIRED_FILE="$reboot_required" \
+SERVER_AGENT_REBOOT_PACKAGES_FILE="$reboot_packages" expect_status 0 \
+    bash "$PROJECT_ROOT/duties/reboot-required.sh"
+grep -q "Title: Server rebooting" "$COMMAND_LOG" ||
+    fail "the reboot duty did not send its notification first"
+grep -q "linux-image-test, libc-test" "$COMMAND_LOG" ||
+    fail "the reboot notification did not list requiring packages"
+grep -q "systemctl reboot" "$COMMAND_LOG" ||
+    fail "the reboot duty did not request a systemd reboot"
+
+report_state="$TEST_ROOT/report-state"
+command -p mkdir -p "$report_state/duties"
+printf 'failure:1\n' >"$report_state/duties/example-failure.status"
+SERVER_AGENT_STATE_DIR="$report_state" expect_status 0 \
+    bash "$PROJECT_ROOT/duties/weekly-host-report.sh"
+for section in "Weekly host report" "Uptime:" "Root filesystem" \
+    "Memory:" "Docker containers:" "Docker storage:" \
+    "Failed duties: example-failure" "Reboot:"; do
+    grep -q "$section" "$OUTPUT_FILE" ||
+        fail "the weekly report omitted: $section"
+done
 
 printf 'Duty tests passed.\n'

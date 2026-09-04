@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 
-# Cadences may be seconds, "daily", or "weekly-<weekday>". Timeout values use a
-# GNU timeout suffix (s, m, h, or d). Notification policies are:
+# Cadences may be seconds, "daily", "daily-at-HH:MM", or
+# "weekly-<weekday>". Timeout values use a GNU timeout suffix (s, m, h, or d).
+# Notification policies are:
 #   always     - notify after every run
 #   on-failure - notify after every failed run
 #   on-change  - notify on the first failure and subsequent recovery
@@ -25,3 +26,7 @@ register_duty "image-updates" "weekly-tuesday" "60m" "always" \
     "$SCRIPT_DIR/duties/image-updates.sh"
 register_duty "security-updates" "daily" "30m" "always" \
     "$SCRIPT_DIR/duties/security-updates.sh"
+register_duty "reboot-required" "daily-at-02:00" "2m" "on-failure" \
+    "$SCRIPT_DIR/duties/reboot-required.sh"
+register_duty "weekly-host-report" "weekly-sunday" "2m" "always" \
+    "$SCRIPT_DIR/duties/weekly-host-report.sh"
