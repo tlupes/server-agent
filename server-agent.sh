@@ -105,7 +105,7 @@ register_duty() {
         return 1
     fi
     case "$notification_policy" in
-        always | on-failure | on-change | never) ;;
+        always | on-failure | on-change | on-failure-recovery | never) ;;
         *)
             log "Duty '$name' has an invalid notification policy: $notification_policy"
             DUTY_REGISTRY_ERRORS=$((DUTY_REGISTRY_ERRORS + 1))
@@ -242,6 +242,12 @@ notify_for_duty_result() {
         on-change)
             if [[ "$result" != "$previous_result" &&
                 ("$result_kind" == "failure" || "$previous_result" == failure:*) ]]; then
+                should_notify=1
+            fi
+            ;;
+        on-failure-recovery)
+            if [[ "$result_kind" == "failure" ||
+                ("$result" == "success" && "$previous_result" == failure:*) ]]; then
                 should_notify=1
             fi
             ;;

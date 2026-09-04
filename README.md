@@ -67,9 +67,10 @@ register_duty \
     "$SCRIPT_DIR/duties/docker-health.sh"
 ```
 
-Supported notification policies are `always`, `on-failure`, `on-change`, and
-`never`. The `on-change` policy notifies on the first failure and again when the
-duty recovers. Last-run and status data are stored under
+Supported notification policies are `always`, `on-failure`, `on-change`,
+`on-failure-recovery`, and `never`. The `on-change` policy notifies on the first
+failure and again when the duty recovers. `on-failure-recovery` notifies after
+every failed attempt and once after recovery. Last-run and status data are stored under
 `/var/lib/server-agent/duties`, allowing five-minute, daily, and weekly duties
 to share the same systemd timer.
 
@@ -84,7 +85,10 @@ candidate revision's isolated trial state before that revision is installed.
 | --- | --- | --- |
 | Filesystem capacity | Every 5 minutes, 20-minute timeout | Checks space and inodes only for the root filesystem `/`; separate mounts such as `/media` are excluded. At 80% it cleans policy-managed temporary files and APT caches; at 90% it also removes dangling Docker images, old build cache, and journals older than 30 days; at 95% it removes unused build cache older than one day and limits archived journals to seven days/500 MB. Alerts reflect the usage remaining after cleanup. The agent-wide lock prevents overlapping runs while cleanup is active. |
 | Docker health | Every 5 minutes | Reports an unavailable daemon, stopped containers, and unhealthy health checks. Set the `server-agent.healthcheck=ignore` label to exclude an intentional stopped container. |
+| Docker log growth | Hourly | Totals each container's active and rotated log files. Warns at 500 MB and escalates at 1 GB without deleting or truncating logs. |
 | Host health | Every 5 minutes | Checks normalized load, available memory, swap usage, and Linux thermal zones. |
+| Kernel/filesystem errors | Every 5 minutes | Uses a persistent journal cursor to detect each new kernel I/O, filesystem corruption/read-only remount, disk-controller, OOM, and kernel-fault event once. |
+| Network mounts | Every 5 minutes | Checks responsive NFS, CIFS/SMB, and SSHFS entries from `/etc/fstab` mounted at `/hillbox` or below. Missing mounts are retried individually; stale mounts receive only a normal unmount/remount, never a forced or lazy detach. Every failed attempt and the eventual recovery are notified. |
 | Disk health | Daily | Runs SMART health checks against disks discovered by `smartctl`. RAID monitoring is intentionally not included. |
 | Image updates | Every Tuesday | Pulls images and recreates Docker Compose projects. It fails safely when unmanaged containers are present because they cannot be recreated reliably from image metadata alone. |
 | Security updates | Daily | Waits up to ten minutes for APT list, archive, and dpkg locks, retries lock races, refreshes metadata with network retries, and applies updates permitted by the host's `unattended-upgrades` policy. Reports whether a reboot is required. |

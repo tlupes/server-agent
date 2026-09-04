@@ -98,16 +98,36 @@ grep -q "Timed out after 1s" "$NOTIFICATION_FILE" ||
     fail "the timeout notification did not explain the failure"
 
 cat >"$SERVER_AGENT_DUTY_REGISTRY" <<EOF
+register_duty "retry-check" 300 "5s" "on-failure-recovery" "$TEST_ROOT/failure.sh"
+EOF
+if SERVER_AGENT_FORCE_DUTIES=1 run_duties; then
+    fail "the retry-notification duty returned success"
+fi
+if SERVER_AGENT_FORCE_DUTIES=1 run_duties; then
+    fail "the retried notification duty returned success"
+fi
+[[ "$(grep -c "Duty failed: retry-check" "$NOTIFICATION_FILE")" == "2" ]] ||
+    fail "on-failure-recovery did not notify after every failure"
+
+cat >"$SERVER_AGENT_DUTY_REGISTRY" <<EOF
+register_duty "retry-check" 300 "5s" "on-failure-recovery" "$TEST_ROOT/success.sh"
+EOF
+SERVER_AGENT_FORCE_DUTIES=1 run_duties
+[[ "$(grep -c "Duty healthy: retry-check" "$NOTIFICATION_FILE")" == "1" ]] ||
+    fail "on-failure-recovery did not notify after recovery"
+
+cat >"$SERVER_AGENT_DUTY_REGISTRY" <<EOF
 register_duty "weekly-check" "weekly-tuesday" "5s" "never" "$TEST_ROOT/success.sh"
 EOF
+weekly_count=$(cat "$DUTY_TEST_COUNT")
 TEST_WEEKDAY=1 run_duties
-[[ "$(cat "$DUTY_TEST_COUNT")" == "3" ]] ||
+[[ "$(cat "$DUTY_TEST_COUNT")" == "$weekly_count" ]] ||
     fail "a Tuesday duty ran on Monday"
 TEST_WEEKDAY=2 run_duties
-[[ "$(cat "$DUTY_TEST_COUNT")" == "4" ]] ||
+[[ "$(cat "$DUTY_TEST_COUNT")" == "$((weekly_count + 1))" ]] ||
     fail "a Tuesday duty did not run on Tuesday"
 TEST_WEEKDAY=2 run_duties
-[[ "$(cat "$DUTY_TEST_COUNT")" == "4" ]] ||
+[[ "$(cat "$DUTY_TEST_COUNT")" == "$((weekly_count + 1))" ]] ||
     fail "a weekly duty ran twice on the same Tuesday"
 
 cat >"$SERVER_AGENT_DUTY_REGISTRY" <<EOF

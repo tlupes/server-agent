@@ -40,6 +40,15 @@ export TEST_ROOT
 grep -q 'register_duty "filesystem-capacity" 300 "20m"' \
     "$PROJECT_ROOT/duties/registry.sh" ||
     fail "the filesystem cleanup timeout is too short"
+grep -q 'register_duty "docker-log-growth" 3600 "30s"' \
+    "$PROJECT_ROOT/duties/registry.sh" ||
+    fail "the Docker log-growth duty is not registered hourly"
+grep -q 'register_duty "kernel-filesystem-errors" 300 "30s"' \
+    "$PROJECT_ROOT/duties/registry.sh" ||
+    fail "the kernel/filesystem error duty is not registered every five minutes"
+grep -q 'register_duty "network-mounts" 300 "4m" "on-failure-recovery"' \
+    "$PROJECT_ROOT/duties/registry.sh" ||
+    fail "the network-mount duty does not retry every five minutes"
 
 cat >"$BIN_DIR/apt-get" <<'EOF'
 #!/usr/bin/env bash
@@ -146,7 +155,11 @@ case "${1:-}" in
         printf 'container-id\n'
         ;;
     inspect)
-        printf '%s\n' "${DOCKER_INSPECT:-/app|running|healthy|<no value>}"
+        if [[ "$*" == *".LogPath"* ]]; then
+            printf '%s\n' "${DOCKER_LOG_DETAILS:-/app|<no value>|json-file|<no value>}"
+        else
+            printf '%s\n' "${DOCKER_INSPECT:-/app|running|healthy|<no value>}"
+        fi
         ;;
     compose)
         if [[ "${2:-}" == "version" ]]; then
@@ -163,6 +176,21 @@ DOCKER_INSPECT='/app|running|unhealthy|<no value>' expect_status 1 \
     bash "$PROJECT_ROOT/duties/docker-health.sh"
 grep -q "unhealthy" "$OUTPUT_FILE" ||
     fail "Docker health failure did not identify the unhealthy container"
+
+docker_log="$TEST_ROOT/container-json.log"
+truncate -s 400M "$docker_log"
+DOCKER_LOG_DETAILS="/app|$docker_log|json-file|10m" expect_status 0 \
+    bash "$PROJECT_ROOT/duties/docker-log-growth.sh"
+truncate -s 600M "$docker_log"
+DOCKER_LOG_DETAILS="/app|$docker_log|json-file|10m" expect_status 80 \
+    bash "$PROJECT_ROOT/duties/docker-log-growth.sh"
+grep -q "warning threshold 500 MB" "$OUTPUT_FILE" ||
+    fail "Docker log growth did not report its warning threshold"
+truncate -s 1100M "$docker_log"
+DOCKER_LOG_DETAILS="/app|$docker_log|json-file|10m" expect_status 95 \
+    bash "$PROJECT_ROOT/duties/docker-log-growth.sh"
+grep -q "critical threshold 1024 MB" "$OUTPUT_FILE" ||
+    fail "Docker log growth did not escalate at 1 GB"
 
 cat >"$BIN_DIR/smartctl" <<'EOF'
 #!/usr/bin/env bash
@@ -219,5 +247,87 @@ grep -q "DPkg::Lock::Timeout=600 .*Acquire::Retries=3 .*update" "$COMMAND_LOG" |
     fail "the security updater did not refresh APT metadata"
 grep -q "unattended-upgrade --verbose" "$COMMAND_LOG" ||
     fail "the security updater did not apply updates"
+
+cat >"$BIN_DIR/journalctl" <<'EOF'
+#!/usr/bin/env bash
+printf 'journalctl %s\n' "$*" >>"$COMMAND_LOG"
+[[ -n "${KERNEL_JOURNAL:-}" ]] && printf '%s\n' "$KERNEL_JOURNAL"
+printf '%s\n' '-- cursor: test-cursor'
+EOF
+
+kernel_state="$TEST_ROOT/kernel-state"
+: >"$COMMAND_LOG"
+KERNEL_JOURNAL='Sep 04 kernel: EXT4-fs error (device sda2): test failure' \
+SERVER_AGENT_STATE_DIR="$kernel_state" expect_status 1 \
+    bash "$PROJECT_ROOT/duties/kernel-filesystem-errors.sh"
+grep -q "EXT4-fs error" "$OUTPUT_FILE" ||
+    fail "the kernel duty did not report a filesystem error"
+
+: >"$COMMAND_LOG"
+KERNEL_JOURNAL='' SERVER_AGENT_STATE_DIR="$kernel_state" expect_status 0 \
+    bash "$PROJECT_ROOT/duties/kernel-filesystem-errors.sh"
+grep -q -- "--after-cursor test-cursor" "$COMMAND_LOG" ||
+    fail "the kernel duty did not resume after its persisted journal cursor"
+grep -q "No new kernel or filesystem errors" "$OUTPUT_FILE" ||
+    fail "the kernel duty did not recover after processing the error"
+
+cat >"$BIN_DIR/findmnt" <<'EOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"--fstab"* ]]; then
+    printf '/hillbox/media nfs defaults\n'
+elif [[ "$*" == *"--mountpoint"* ]]; then
+    [[ -f "$TEST_ROOT/network-mounted" ]] || exit 1
+    if [[ "$*" == *"FSTYPE"* ]]; then
+        printf 'nfs\n'
+    else
+        printf '/hillbox/media\n'
+    fi
+fi
+EOF
+cat >"$BIN_DIR/mount" <<'EOF'
+#!/usr/bin/env bash
+printf 'mount %s\n' "$*" >>"$COMMAND_LOG"
+if [[ "${NETWORK_MOUNT_FAIL:-0}" == "1" ]]; then
+    printf 'Network server is unavailable.\n' >&2
+    exit 32
+fi
+touch "$TEST_ROOT/network-mounted"
+EOF
+cat >"$BIN_DIR/umount" <<'EOF'
+#!/usr/bin/env bash
+rm -f "$TEST_ROOT/network-mounted"
+EOF
+cat >"$BIN_DIR/stat" <<'EOF'
+#!/usr/bin/env bash
+[[ -f "$TEST_ROOT/network-mounted" ]]
+EOF
+cat >"$BIN_DIR/mkdir" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+
+rm -f "$TEST_ROOT/network-mounted"
+: >"$COMMAND_LOG"
+NETWORK_MOUNT_FAIL=1 expect_status 1 \
+    bash "$PROJECT_ROOT/duties/network-mounts.sh"
+grep -q "not mounted and mount attempt failed" "$OUTPUT_FILE" ||
+    fail "a failed network mount did not explain the failure"
+
+NETWORK_MOUNT_FAIL=0 expect_status 0 \
+    bash "$PROJECT_ROOT/duties/network-mounts.sh"
+grep -q "Successfully mounted network filesystems" "$OUTPUT_FILE" ||
+    fail "a recovered network mount did not report success"
+
+NETWORK_MOUNT_FAIL=1 expect_status 0 \
+    bash "$PROJECT_ROOT/duties/network-mounts.sh"
+grep -q "mounted and responsive" "$OUTPUT_FILE" ||
+    fail "a healthy network mount was unnecessarily remounted"
+
+rm -f "$TEST_ROOT/network-mounted"
+: >"$COMMAND_LOG"
+NETWORK_MOUNT_FAIL=1 SERVER_AGENT_TRIAL=1 expect_status 0 \
+    bash "$PROJECT_ROOT/duties/network-mounts.sh"
+[[ ! -s "$COMMAND_LOG" ]] ||
+    fail "a candidate trial attempted to change network mounts"
 
 printf 'Duty tests passed.\n'
