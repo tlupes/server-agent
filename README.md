@@ -82,7 +82,7 @@ candidate revision's isolated trial state before that revision is installed.
 
 | Duty | Schedule | Behavior |
 | --- | --- | --- |
-| Filesystem capacity | Every 5 minutes | Checks space and inodes only for the root filesystem `/`; separate mounts such as `/media` are excluded. At 80% it cleans policy-managed temporary files and APT caches; at 90% it also removes dangling Docker images, old build cache, and journals older than 30 days; at 95% it removes unused build cache older than one day and limits archived journals to seven days/500 MB. Alerts reflect the usage remaining after cleanup. |
+| Filesystem capacity | Every 5 minutes, 20-minute timeout | Checks space and inodes only for the root filesystem `/`; separate mounts such as `/media` are excluded. At 80% it cleans policy-managed temporary files and APT caches; at 90% it also removes dangling Docker images, old build cache, and journals older than 30 days; at 95% it removes unused build cache older than one day and limits archived journals to seven days/500 MB. Alerts reflect the usage remaining after cleanup. The agent-wide lock prevents overlapping runs while cleanup is active. |
 | Docker health | Every 5 minutes | Reports an unavailable daemon, stopped containers, and unhealthy health checks. Set the `server-agent.healthcheck=ignore` label to exclude an intentional stopped container. |
 | Host health | Every 5 minutes | Checks normalized load, available memory, swap usage, and Linux thermal zones. |
 | Disk health | Daily | Runs SMART health checks against disks discovered by `smartctl`. RAID monitoring is intentionally not included. |

@@ -37,6 +37,10 @@ export PATH="$BIN_DIR:$PATH"
 export COMMAND_LOG
 export TEST_ROOT
 
+grep -q 'register_duty "filesystem-capacity" 300 "20m"' \
+    "$PROJECT_ROOT/duties/registry.sh" ||
+    fail "the filesystem cleanup timeout is too short"
+
 cat >"$BIN_DIR/apt-get" <<'EOF'
 #!/usr/bin/env bash
 printf 'apt-get %s\n' "$*" >>"$COMMAND_LOG"

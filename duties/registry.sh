@@ -6,7 +6,7 @@
 #   on-failure - notify after every failed run
 #   on-change  - notify on the first failure and subsequent recovery
 #   never      - do not send duty notifications
-register_duty "filesystem-capacity" 300 "30s" "on-change" \
+register_duty "filesystem-capacity" 300 "20m" "on-change" \
     "$SCRIPT_DIR/duties/filesystem-capacity.sh"
 register_duty "docker-health" 300 "30s" "on-change" \
     "$SCRIPT_DIR/duties/docker-health.sh"
