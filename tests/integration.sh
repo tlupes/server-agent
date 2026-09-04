@@ -26,7 +26,7 @@ git -C "$SOURCE" config user.name "Server Agent Test"
 git -C "$SOURCE" config user.email "server-agent-test@example.invalid"
 cp "$PROJECT_ROOT/server-agent.sh" "$SOURCE/server-agent.sh"
 mkdir -p "$SOURCE/duties"
-cp "$PROJECT_ROOT/duties/registry.sh" "$SOURCE/duties/registry.sh"
+printf '#!/usr/bin/env bash\n' >"$SOURCE/duties/registry.sh"
 chmod 0755 "$SOURCE/server-agent.sh"
 git -C "$SOURCE" add server-agent.sh duties/registry.sh
 git -C "$SOURCE" commit --quiet -m "Initial revision"

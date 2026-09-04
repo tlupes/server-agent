@@ -92,7 +92,9 @@ register_duty() {
         DUTY_REGISTRY_ERRORS=$((DUTY_REGISTRY_ERRORS + 1))
         return 1
     fi
-    if [[ ! "$cadence_seconds" =~ ^[1-9][0-9]*$ ]]; then
+    if [[ ! "$cadence_seconds" =~ ^[1-9][0-9]*$ &&
+        "$cadence_seconds" != "daily" &&
+        ! "$cadence_seconds" =~ ^weekly-(monday|tuesday|wednesday|thursday|friday|saturday|sunday)$ ]]; then
         log "Duty '$name' has an invalid cadence: $cadence_seconds"
         DUTY_REGISTRY_ERRORS=$((DUTY_REGISTRY_ERRORS + 1))
         return 1
@@ -163,12 +165,31 @@ write_duty_state() {
     fi
 }
 
+weekday_number() {
+    case "$1" in
+        monday) printf '1\n' ;;
+        tuesday) printf '2\n' ;;
+        wednesday) printf '3\n' ;;
+        thursday) printf '4\n' ;;
+        friday) printf '5\n' ;;
+        saturday) printf '6\n' ;;
+        sunday) printf '7\n' ;;
+    esac
+}
+
 duty_is_due() {
     local name=$1
     local last_run_file="$DUTY_STATE_DIR/$name.last-run"
-    local now last_run
+    local cadence=${DUTY_CADENCES[$name]}
+    local now last_run today last_run_day weekday scheduled_weekday
 
     if [[ "${SERVER_AGENT_FORCE_DUTIES:-0}" == "1" || ! -f "$last_run_file" ]]; then
+        if [[ "$cadence" == weekly-* && "${SERVER_AGENT_FORCE_DUTIES:-0}" != "1" ]]; then
+            scheduled_weekday=$(weekday_number "${cadence#weekly-}")
+            weekday=$(date +%u)
+            [[ "$weekday" == "$scheduled_weekday" ]]
+            return
+        fi
         return 0
     fi
 
@@ -178,7 +199,24 @@ duty_is_due() {
         return 0
     fi
 
-    ((now - last_run >= DUTY_CADENCES[$name]))
+    case "$cadence" in
+        daily)
+            today=$(date +%F)
+            last_run_day=$(date --date="@$last_run" +%F) || return 0
+            [[ "$today" != "$last_run_day" ]]
+            ;;
+        weekly-*)
+            scheduled_weekday=$(weekday_number "${cadence#weekly-}")
+            weekday=$(date +%u)
+            [[ "$weekday" == "$scheduled_weekday" ]] || return 1
+            today=$(date +%F)
+            last_run_day=$(date --date="@$last_run" +%F) || return 0
+            [[ "$today" != "$last_run_day" ]]
+            ;;
+        *)
+            ((now - last_run >= cadence))
+            ;;
+    esac
 }
 
 notify_for_duty_result() {
@@ -188,6 +226,7 @@ notify_for_duty_result() {
     local details=$4
     local policy=${DUTY_POLICIES[$name]}
     local should_notify=0
+    local result_kind=${result%%:*}
 
     if [[ "${SERVER_AGENT_SUPPRESS_DUTY_NOTIFICATIONS:-0}" == "1" ]]; then
         return
@@ -198,11 +237,11 @@ notify_for_duty_result() {
             should_notify=1
             ;;
         on-failure)
-            [[ "$result" == "failure" ]] && should_notify=1
+            [[ "$result_kind" == "failure" ]] && should_notify=1
             ;;
         on-change)
-            if [[ "$result" == "failure" && "$previous_result" != "failure" ]] ||
-                [[ "$result" == "success" && "$previous_result" == "failure" ]]; then
+            if [[ "$result" != "$previous_result" &&
+                ("$result_kind" == "failure" || "$previous_result" == failure:*) ]]; then
                 should_notify=1
             fi
             ;;
@@ -215,7 +254,7 @@ notify_for_duty_result() {
         return
     fi
 
-    if [[ "$result" == "failure" ]]; then
+    if [[ "$result_kind" == "failure" ]]; then
         notify "Duty failed: $name" "${details:-The duty exited unsuccessfully without output.}" "high" || true
     else
         notify "Duty healthy: $name" "${details:-The duty completed successfully.}" || true
@@ -244,7 +283,7 @@ run_duty() {
         result="success"
     else
         exit_code=$?
-        result="failure"
+        result="failure:$exit_code"
     fi
 
     details=$(tail -c 3000 "$output_file")
@@ -263,7 +302,7 @@ ${details}"
     fi
 
     notify_for_duty_result "$name" "$result" "$previous_result" "$details"
-    if [[ "$result" == "failure" ]]; then
+    if [[ "$result" == failure:* ]]; then
         if ((exit_code == 124)); then
             log "Duty '$name' timed out after ${DUTY_TIMEOUTS[$name]}."
         else

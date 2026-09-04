@@ -7,9 +7,15 @@ successfully.
 
 ## Install
 
-The host needs `bash`, `curl`, `git`, `util-linux` (for `flock`), and GNU
-`coreutils` (for `timeout`). Clone the repository into a permanent location,
-then run:
+The host needs `bash`, `curl`, `git`, Docker with the Compose plugin,
+`smartmontools`, `unattended-upgrades`, `util-linux` (for `flock`), and GNU
+`coreutils` (for `timeout`). On Ubuntu, install the host packages with:
+
+```bash
+sudo apt-get install smartmontools unattended-upgrades
+```
+
+Clone the repository into a permanent location, then run:
 
 ```bash
 sudo ./install.sh
@@ -48,8 +54,9 @@ invocations.
 ## Duties
 
 `run_duties` dispatches standalone scripts declared in `duties/registry.sh`.
-Each registration supplies a unique name, cadence in seconds, GNU `timeout`
-duration, notification policy, and handler path:
+Each registration supplies a unique name, cadence, GNU `timeout` duration,
+notification policy, and handler path. Cadences may be a number of seconds,
+`daily`, or `weekly-<weekday>`:
 
 ```bash
 register_duty \
@@ -70,3 +77,18 @@ Handlers receive the service environment, write diagnostic details to standard
 output or standard error, and indicate success or failure with their exit code.
 They should be idempotent because every registered duty is force-run once in a
 candidate revision's isolated trial state before that revision is installed.
+
+## Included duties
+
+| Duty | Schedule | Behavior |
+| --- | --- | --- |
+| Filesystem capacity | Every 5 minutes | Checks local filesystem space and inodes. Alerts escalate at 80%, 90%, and 95%, and clear after recovery. |
+| Docker health | Every 5 minutes | Reports an unavailable daemon, stopped containers, and unhealthy health checks. Set the `server-agent.healthcheck=ignore` label to exclude an intentional stopped container. |
+| Host health | Every 5 minutes | Checks normalized load, available memory, swap usage, and Linux thermal zones. |
+| Disk health | Daily | Runs SMART health checks against disks discovered by `smartctl`. RAID monitoring is intentionally not included. |
+| Image updates | Every Tuesday | Pulls images and recreates Docker Compose projects. It fails safely when unmanaged containers are present because they cannot be recreated reliably from image metadata alone. |
+| Security updates | Daily | Refreshes APT metadata and applies updates permitted by the host's `unattended-upgrades` policy. Reports whether a reboot is required. |
+
+Image and package duties perform dependency checks, but do not mutate the host
+during candidate-revision trials. The systemd service allows up to two hours
+for a run, while each duty retains its own shorter timeout.

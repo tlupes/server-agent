@@ -14,12 +14,16 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
-for command in curl git systemctl timeout flock; do
+for command in curl docker git smartctl systemctl timeout flock unattended-upgrade; do
     if ! command -v "$command" >/dev/null 2>&1; then
         printf 'Required command is missing: %s\n' "$command" >&2
         exit 1
     fi
 done
+if ! docker compose version >/dev/null 2>&1; then
+    printf 'The Docker Compose plugin is required.\n' >&2
+    exit 1
+fi
 
 if ! git -C "$SCRIPT_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
     printf 'The installer must be run from a Git checkout.\n' >&2
@@ -50,7 +54,7 @@ EnvironmentFile=$ENV_FILE
 Environment="SERVER_AGENT_REPO_ROOT=$escaped_script_dir"
 Environment="SERVER_AGENT_BRANCH=$branch"
 ExecStart="$escaped_script_dir/server-agent.sh"
-TimeoutStartSec=4min30s
+TimeoutStartSec=2h
 
 [Install]
 WantedBy=multi-user.target

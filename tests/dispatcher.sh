@@ -25,6 +25,14 @@ notify() {
     printf '%s|%s|%s\n' "$1" "$2" "${3:-default}" >>"$NOTIFICATION_FILE"
 }
 
+date() {
+    if [[ "${1:-}" == "+%u" && -n "${TEST_WEEKDAY:-}" ]]; then
+        printf '%s\n' "$TEST_WEEKDAY"
+    else
+        command date "$@"
+    fi
+}
+
 cat >"$TEST_ROOT/success.sh" <<'EOF'
 #!/usr/bin/env bash
 count=0
@@ -88,6 +96,19 @@ if SERVER_AGENT_FORCE_DUTIES=1 run_duties; then
 fi
 grep -q "Timed out after 1s" "$NOTIFICATION_FILE" ||
     fail "the timeout notification did not explain the failure"
+
+cat >"$SERVER_AGENT_DUTY_REGISTRY" <<EOF
+register_duty "weekly-check" "weekly-tuesday" "5s" "never" "$TEST_ROOT/success.sh"
+EOF
+TEST_WEEKDAY=1 run_duties
+[[ "$(cat "$DUTY_TEST_COUNT")" == "3" ]] ||
+    fail "a Tuesday duty ran on Monday"
+TEST_WEEKDAY=2 run_duties
+[[ "$(cat "$DUTY_TEST_COUNT")" == "4" ]] ||
+    fail "a Tuesday duty did not run on Tuesday"
+TEST_WEEKDAY=2 run_duties
+[[ "$(cat "$DUTY_TEST_COUNT")" == "4" ]] ||
+    fail "a weekly duty ran twice on the same Tuesday"
 
 cat >"$SERVER_AGENT_DUTY_REGISTRY" <<EOF
 register_duty "invalid-check" 0 "5s" "never" "$TEST_ROOT/success.sh"
