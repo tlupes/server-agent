@@ -40,7 +40,12 @@ export TEST_ROOT
 cat >"$BIN_DIR/df" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$*" == *"--inodes"* ]]; then
-    printf 'IUse%% Mounted on\n%s%% /\n' "${INODE_PERCENT:-1}"
+    if [[ "$*" == *"--output"* ]]; then
+        printf 'df: options -i and --output are mutually exclusive\n' >&2
+        exit 1
+    fi
+    printf 'Filesystem Inodes IUsed IFree IUse%% Mounted on\n'
+    printf '/dev/test 1000 %s 999 %s%% /\n' "${INODE_PERCENT:-1}" "${INODE_PERCENT:-1}"
 else
     printf 'Use%% Mounted on\n%s%% /\n' "${SPACE_PERCENT:-1}"
 fi
@@ -51,6 +56,8 @@ SPACE_PERCENT=80 INODE_PERCENT=1 expect_status 80 \
 SPACE_PERCENT=90 INODE_PERCENT=1 expect_status 90 \
     bash "$PROJECT_ROOT/duties/filesystem-capacity.sh"
 SPACE_PERCENT=95 INODE_PERCENT=1 expect_status 95 \
+    bash "$PROJECT_ROOT/duties/filesystem-capacity.sh"
+SPACE_PERCENT=1 INODE_PERCENT=90 expect_status 90 \
     bash "$PROJECT_ROOT/duties/filesystem-capacity.sh"
 SPACE_PERCENT=1 INODE_PERCENT=1 expect_status 0 \
     bash "$PROJECT_ROOT/duties/filesystem-capacity.sh"

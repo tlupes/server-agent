@@ -44,7 +44,7 @@ while read -r percent mountpoint; do
     record_usage "space" "$percent" "$mountpoint"
 done <<<"$space_output"
 
-if ! inode_output=$(df --local --inodes --output=pcent,target \
+if ! inode_output=$(df --local --inodes --portability \
     --exclude-type=tmpfs \
     --exclude-type=devtmpfs \
     --exclude-type=squashfs \
@@ -53,8 +53,8 @@ if ! inode_output=$(df --local --inodes --output=pcent,target \
     exit 1
 fi
 
-while read -r percent mountpoint; do
-    [[ "$percent" == "IUse%" ]] && continue
+while read -r filesystem inodes used available percent mountpoint; do
+    [[ "$filesystem" == "Filesystem" ]] && continue
     record_usage "inode" "$percent" "$mountpoint"
 done <<<"$inode_output"
 
