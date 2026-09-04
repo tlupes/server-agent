@@ -77,8 +77,15 @@ if [[ "$*" == *"--inodes"* ]]; then
     fi
     printf 'Filesystem Inodes IUsed IFree IUse%% Mounted on\n'
     printf '/dev/test 1000 %s 999 %s%% /\n' "${INODE_PERCENT:-1}" "${INODE_PERCENT:-1}"
+    printf 'efivarfs 0 0 0 - /sys/firmware/efi/efivars\n'
+    if [[ "${*: -1}" != "/" ]]; then
+        printf '/dev/media 1000 990 10 99%% /media/archive\n'
+    fi
 else
     printf 'Use%% Mounted on\n%s%% /\n' "${SPACE_PERCENT:-1}"
+    if [[ "${*: -1}" != "/" ]]; then
+        printf '99%% /media/archive\n'
+    fi
 fi
 EOF
 
@@ -116,6 +123,8 @@ SPACE_PERCENT=1 INODE_PERCENT=90 expect_status 90 \
     bash "$PROJECT_ROOT/duties/filesystem-capacity.sh"
 SPACE_PERCENT=1 INODE_PERCENT=1 expect_status 0 \
     bash "$PROJECT_ROOT/duties/filesystem-capacity.sh"
+grep -q "root filesystem is below 80%" "$OUTPUT_FILE" ||
+    fail "the filesystem check was influenced by a separate /media mount"
 
 : >"$COMMAND_LOG"
 SPACE_PERCENT=95 INODE_PERCENT=1 SERVER_AGENT_TRIAL=1 expect_status 0 \

@@ -24,7 +24,7 @@ record_usage() {
     local threshold=0
 
     percent=${percent%%%}
-    [[ "$percent" =~ ^[0-9]+$ ]] || return
+    [[ "$percent" =~ ^[0-9]+$ ]] || return 0
 
     if ((percent >= 95)); then
         threshold=95
@@ -45,12 +45,8 @@ inspect_capacity() {
 
     reset_capacity_result
 
-    if ! space_output=$(df --local --output=pcent,target \
-        --exclude-type=tmpfs \
-        --exclude-type=devtmpfs \
-        --exclude-type=squashfs \
-        --exclude-type=overlay 2>&1); then
-        printf 'Unable to inspect filesystem capacity:\n%s\n' "$space_output" >&2
+    if ! space_output=$(df --output=pcent,target / 2>&1); then
+        printf 'Unable to inspect root filesystem capacity:\n%s\n' "$space_output" >&2
         return 1
     fi
 
@@ -59,12 +55,8 @@ inspect_capacity() {
         record_usage "space" "$percent" "$mountpoint"
     done <<<"$space_output"
 
-    if ! inode_output=$(df --local --inodes --portability \
-        --exclude-type=tmpfs \
-        --exclude-type=devtmpfs \
-        --exclude-type=squashfs \
-        --exclude-type=overlay 2>&1); then
-        printf 'Unable to inspect filesystem inode capacity:\n%s\n' "$inode_output" >&2
+    if ! inode_output=$(df --inodes --portability / 2>&1); then
+        printf 'Unable to inspect root filesystem inode capacity:\n%s\n' "$inode_output" >&2
         return 1
     fi
 
@@ -72,6 +64,8 @@ inspect_capacity() {
         [[ "$filesystem" == "Filesystem" ]] && continue
         record_usage "inode" "$percent" "$mountpoint"
     done <<<"$inode_output"
+
+    return 0
 }
 
 run_cleanup() {
@@ -158,8 +152,8 @@ if ((initial_threshold > 0)); then
         exit "$highest_threshold"
     fi
 
-    printf '\nAfter cleanup: all local filesystems are below 80%% space and inode usage.\n'
+    printf '\nAfter cleanup: the root filesystem is below 80%% space and inode usage.\n'
     exit 0
 fi
 
-printf 'All local filesystems are below 80%% space and inode usage.\n'
+printf 'The root filesystem is below 80%% space and inode usage.\n'
