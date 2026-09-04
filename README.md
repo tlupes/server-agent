@@ -45,5 +45,28 @@ Rewritten/non-fast-forward history and local checkout changes are rejected
 rather than overwritten. A lock prevents concurrent timer or manual
 invocations.
 
-The initial `run_duties` function is intentionally a no-op. Add host maintenance
-work there; any nonzero result prevents that revision from being installed.
+## Duties
+
+`run_duties` dispatches standalone scripts declared in `duties/registry.sh`.
+Each registration supplies a unique name, cadence in seconds, GNU `timeout`
+duration, notification policy, and handler path:
+
+```bash
+register_duty \
+    "docker-health" \
+    300 \
+    "30s" \
+    "on-change" \
+    "$SCRIPT_DIR/duties/docker-health.sh"
+```
+
+Supported notification policies are `always`, `on-failure`, `on-change`, and
+`never`. The `on-change` policy notifies on the first failure and again when the
+duty recovers. Last-run and status data are stored under
+`/var/lib/server-agent/duties`, allowing five-minute, daily, and weekly duties
+to share the same systemd timer.
+
+Handlers receive the service environment, write diagnostic details to standard
+output or standard error, and indicate success or failure with their exit code.
+They should be idempotent because every registered duty is force-run once in a
+candidate revision's isolated trial state before that revision is installed.

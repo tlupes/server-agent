@@ -11,6 +11,15 @@ readonly REMOTE="${SERVER_AGENT_REMOTE:-origin}"
 readonly TRIAL_TIMEOUT="${SERVER_AGENT_TRIAL_TIMEOUT:-240s}"
 readonly NTFY_TIMEOUT="${SERVER_AGENT_NTFY_TIMEOUT:-15}"
 readonly UPDATE_WORKTREE="$STATE_DIR/update-worktree"
+readonly DUTY_STATE_DIR="$STATE_DIR/duties"
+readonly DUTY_REGISTRY="${SERVER_AGENT_DUTY_REGISTRY:-$SCRIPT_DIR/duties/registry.sh}"
+
+declare -a DUTY_NAMES=()
+declare -A DUTY_CADENCES=()
+declare -A DUTY_TIMEOUTS=()
+declare -A DUTY_POLICIES=()
+declare -A DUTY_HANDLERS=()
+DUTY_REGISTRY_ERRORS=0
 
 log() {
     printf '%s [%s] %s\n' "$(date --iso-8601=seconds)" "$SCRIPT_NAME" "$*" >&2
@@ -66,10 +75,226 @@ notify_failure() {
 $(notification_text "$details")" "high" || true
 }
 
+register_duty() {
+    local name=$1
+    local cadence_seconds=$2
+    local timeout_duration=$3
+    local notification_policy=$4
+    local handler=$5
+
+    if [[ ! "$name" =~ ^[a-z0-9][a-z0-9-]*$ ]]; then
+        log "Invalid duty name '$name'; use lowercase letters, numbers, and hyphens."
+        DUTY_REGISTRY_ERRORS=$((DUTY_REGISTRY_ERRORS + 1))
+        return 1
+    fi
+    if [[ -n "${DUTY_CADENCES[$name]+registered}" ]]; then
+        log "Duty '$name' is registered more than once."
+        DUTY_REGISTRY_ERRORS=$((DUTY_REGISTRY_ERRORS + 1))
+        return 1
+    fi
+    if [[ ! "$cadence_seconds" =~ ^[1-9][0-9]*$ ]]; then
+        log "Duty '$name' has an invalid cadence: $cadence_seconds"
+        DUTY_REGISTRY_ERRORS=$((DUTY_REGISTRY_ERRORS + 1))
+        return 1
+    fi
+    if [[ ! "$timeout_duration" =~ ^[1-9][0-9]*(s|m|h|d)$ ]]; then
+        log "Duty '$name' has an invalid timeout: $timeout_duration"
+        DUTY_REGISTRY_ERRORS=$((DUTY_REGISTRY_ERRORS + 1))
+        return 1
+    fi
+    case "$notification_policy" in
+        always | on-failure | on-change | never) ;;
+        *)
+            log "Duty '$name' has an invalid notification policy: $notification_policy"
+            DUTY_REGISTRY_ERRORS=$((DUTY_REGISTRY_ERRORS + 1))
+            return 1
+            ;;
+    esac
+    if [[ ! -f "$handler" ]]; then
+        log "Duty '$name' handler does not exist: $handler"
+        DUTY_REGISTRY_ERRORS=$((DUTY_REGISTRY_ERRORS + 1))
+        return 1
+    fi
+
+    DUTY_NAMES+=("$name")
+    DUTY_CADENCES["$name"]=$cadence_seconds
+    DUTY_TIMEOUTS["$name"]=$timeout_duration
+    DUTY_POLICIES["$name"]=$notification_policy
+    DUTY_HANDLERS["$name"]=$handler
+}
+
+load_duty_registry() {
+    local source_result
+
+    DUTY_NAMES=()
+    DUTY_CADENCES=()
+    DUTY_TIMEOUTS=()
+    DUTY_POLICIES=()
+    DUTY_HANDLERS=()
+    DUTY_REGISTRY_ERRORS=0
+
+    if [[ ! -f "$DUTY_REGISTRY" ]]; then
+        log "Duty registry does not exist: $DUTY_REGISTRY"
+        return 1
+    fi
+
+    # shellcheck source=/dev/null
+    if source "$DUTY_REGISTRY"; then
+        source_result=0
+    else
+        source_result=$?
+    fi
+
+    if ((source_result != 0 || DUTY_REGISTRY_ERRORS != 0)); then
+        log "Duty registry validation failed with $DUTY_REGISTRY_ERRORS invalid declaration(s)."
+        return 1
+    fi
+}
+
+write_duty_state() {
+    local destination=$1
+    local value=$2
+    local temporary
+
+    temporary=$(mktemp "$destination.XXXXXX") || return 1
+    if ! printf '%s\n' "$value" >"$temporary" || ! mv -f "$temporary" "$destination"; then
+        rm -f "$temporary"
+        return 1
+    fi
+}
+
+duty_is_due() {
+    local name=$1
+    local last_run_file="$DUTY_STATE_DIR/$name.last-run"
+    local now last_run
+
+    if [[ "${SERVER_AGENT_FORCE_DUTIES:-0}" == "1" || ! -f "$last_run_file" ]]; then
+        return 0
+    fi
+
+    now=$(date +%s)
+    read -r last_run <"$last_run_file" || return 0
+    if [[ ! "$last_run" =~ ^[0-9]+$ || "$now" -lt "$last_run" ]]; then
+        return 0
+    fi
+
+    ((now - last_run >= DUTY_CADENCES[$name]))
+}
+
+notify_for_duty_result() {
+    local name=$1
+    local result=$2
+    local previous_result=$3
+    local details=$4
+    local policy=${DUTY_POLICIES[$name]}
+    local should_notify=0
+
+    if [[ "${SERVER_AGENT_SUPPRESS_DUTY_NOTIFICATIONS:-0}" == "1" ]]; then
+        return
+    fi
+
+    case "$policy" in
+        always)
+            should_notify=1
+            ;;
+        on-failure)
+            [[ "$result" == "failure" ]] && should_notify=1
+            ;;
+        on-change)
+            if [[ "$result" == "failure" && "$previous_result" != "failure" ]] ||
+                [[ "$result" == "success" && "$previous_result" == "failure" ]]; then
+                should_notify=1
+            fi
+            ;;
+        never)
+            return
+            ;;
+    esac
+
+    if ((should_notify == 0)); then
+        return
+    fi
+
+    if [[ "$result" == "failure" ]]; then
+        notify "Duty failed: $name" "${details:-The duty exited unsuccessfully without output.}" "high" || true
+    else
+        notify "Duty healthy: $name" "${details:-The duty completed successfully.}" || true
+    fi
+}
+
+run_duty() {
+    local name=$1
+    local output_file previous_result="" result exit_code details now
+    local last_run_file="$DUTY_STATE_DIR/$name.last-run"
+    local status_file="$DUTY_STATE_DIR/$name.status"
+
+    if ! duty_is_due "$name"; then
+        return
+    fi
+
+    output_file=$(mktemp "$DUTY_STATE_DIR/$name.output.XXXXXX") || {
+        log "Unable to create an output file for duty '$name'."
+        return 1
+    }
+
+    log "Running duty '$name' (timeout ${DUTY_TIMEOUTS[$name]})."
+    if timeout --signal=TERM --kill-after=5s "${DUTY_TIMEOUTS[$name]}" \
+        bash "${DUTY_HANDLERS[$name]}" >"$output_file" 2>&1; then
+        exit_code=0
+        result="success"
+    else
+        exit_code=$?
+        result="failure"
+    fi
+
+    details=$(tail -c 3000 "$output_file")
+    rm -f "$output_file"
+    if ((exit_code == 124)); then
+        details="Timed out after ${DUTY_TIMEOUTS[$name]}.
+${details}"
+    fi
+    [[ -f "$status_file" ]] && read -r previous_result <"$status_file"
+
+    now=$(date +%s)
+    if ! write_duty_state "$last_run_file" "$now" ||
+        ! write_duty_state "$status_file" "$result"; then
+        log "Unable to persist state for duty '$name'."
+        return 1
+    fi
+
+    notify_for_duty_result "$name" "$result" "$previous_result" "$details"
+    if [[ "$result" == "failure" ]]; then
+        if ((exit_code == 124)); then
+            log "Duty '$name' timed out after ${DUTY_TIMEOUTS[$name]}."
+        else
+            log "Duty '$name' failed with exit code $exit_code: ${details:-no output}"
+        fi
+        return 1
+    fi
+
+    log "Duty '$name' completed successfully."
+}
+
 run_duties() {
-    # Add periodic host maintenance duties here. A trial update must complete all
-    # duties successfully before the new revision is promoted.
-    log "No periodic duties are configured yet."
+    local name
+    local failures=0
+
+    if ! load_duty_registry; then
+        return 1
+    fi
+    if ((${#DUTY_NAMES[@]} == 0)); then
+        log "No duties are registered."
+        return
+    fi
+
+    mkdir -p "$DUTY_STATE_DIR"
+    for name in "${DUTY_NAMES[@]}"; do
+        if ! run_duty "$name"; then
+            failures=$((failures + 1))
+        fi
+    done
+
+    ((failures == 0))
 }
 
 repo_git() {
@@ -95,12 +320,14 @@ run_trial_revision() {
         env \
         SERVER_AGENT_TRIAL=1 \
         SERVER_AGENT_REPO_ROOT="$UPDATE_WORKTREE" \
-        SERVER_AGENT_STATE_DIR="$STATE_DIR" \
+        SERVER_AGENT_STATE_DIR="$UPDATE_WORKTREE/.server-agent-state" \
         SERVER_AGENT_LOCK_FILE="$LOCK_FILE" \
         SERVER_AGENT_REMOTE="$REMOTE" \
         SERVER_AGENT_BRANCH="$BRANCH" \
         SERVER_AGENT_TRIAL_TIMEOUT="$TRIAL_TIMEOUT" \
         SERVER_AGENT_NTFY_TIMEOUT="$NTFY_TIMEOUT" \
+        SERVER_AGENT_FORCE_DUTIES=1 \
+        SERVER_AGENT_SUPPRESS_DUTY_NOTIFICATIONS=1 \
         bash "$UPDATE_WORKTREE/server-agent.sh" >"$output_file" 2>&1
 }
 
@@ -245,4 +472,6 @@ main() {
     update_and_run
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

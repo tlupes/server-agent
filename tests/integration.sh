@@ -25,8 +25,10 @@ git init --quiet --initial-branch=main "$SOURCE"
 git -C "$SOURCE" config user.name "Server Agent Test"
 git -C "$SOURCE" config user.email "server-agent-test@example.invalid"
 cp "$PROJECT_ROOT/server-agent.sh" "$SOURCE/server-agent.sh"
+mkdir -p "$SOURCE/duties"
+cp "$PROJECT_ROOT/duties/registry.sh" "$SOURCE/duties/registry.sh"
 chmod 0755 "$SOURCE/server-agent.sh"
-git -C "$SOURCE" add server-agent.sh
+git -C "$SOURCE" add server-agent.sh duties/registry.sh
 git -C "$SOURCE" commit --quiet -m "Initial revision"
 git -C "$SOURCE" remote add origin "$REMOTE"
 git -C "$SOURCE" push --quiet --set-upstream origin main
@@ -47,7 +49,7 @@ exit 0
 EOF
 chmod 0755 "$TEST_ROOT/bin/curl" "$TEST_ROOT/bin/flock"
 
-sed -i 's/No periodic duties are configured yet/Successful trial/' \
+sed -i 's/No duties are registered/Successful trial/' \
     "$SOURCE/server-agent.sh"
 git -C "$SOURCE" add server-agent.sh
 git -C "$SOURCE" commit --quiet -m "Working update"
