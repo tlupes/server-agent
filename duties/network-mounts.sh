@@ -7,7 +7,7 @@ readonly HEALTH_TIMEOUT="10s"
 readonly MOUNT_TIMEOUT="30s"
 readonly UNMOUNT_TIMEOUT="30s"
 
-for command in find findmnt mount stat timeout umount; do
+for command in docker find findmnt mount stat timeout umount; do
     if ! command -v "$command" >/dev/null 2>&1; then
         printf 'Required network-mount command is missing: %s\n' "$command" >&2
         exit 1
@@ -116,6 +116,28 @@ ${output:-The mount timed out or returned no details.}")
     healthy=$((healthy + 1))
 done
 
+restarted_containers=0
+if ((${#repaired[@]} > 0)); then
+    if ! output=$(docker ps --quiet 2>&1); then
+        failures+=("Network mounts were repaired, but running Docker containers could not be listed.
+${output:-Docker returned no details.}")
+    else
+        running_containers=()
+        while IFS= read -r container_id; do
+            [[ -n "$container_id" ]] && running_containers+=("$container_id")
+        done <<<"$output"
+
+        if ((${#running_containers[@]} > 0)); then
+            if ! output=$(docker restart "${running_containers[@]}" 2>&1); then
+                failures+=("Network mounts were repaired, but running Docker containers could not be restarted.
+${output:-Docker returned no details.}")
+            else
+                restarted_containers=${#running_containers[@]}
+            fi
+        fi
+    fi
+fi
+
 if ((${#failures[@]} > 0)); then
     printf '%s\n' "${failures[@]}"
     if ((${#repaired[@]} > 0)); then
@@ -125,7 +147,8 @@ if ((${#failures[@]} > 0)); then
 fi
 
 if ((${#repaired[@]} > 0)); then
-    printf 'Successfully mounted network filesystems: %s\n' "${repaired[*]}"
+    printf 'Successfully mounted network filesystems: %s; restarted %d running Docker container(s).\n' \
+        "${repaired[*]}" "$restarted_containers"
 else
     printf 'All %d network filesystem(s) under %s are mounted and responsive.\n' \
         "$healthy" "$MOUNT_ROOT"

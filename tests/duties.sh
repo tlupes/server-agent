@@ -173,6 +173,13 @@ case "${1:-}" in
         fi
         printf '%s\n' "$*" >>"$COMMAND_LOG"
         ;;
+    restart)
+        printf '%s\n' "$*" >>"$COMMAND_LOG"
+        if [[ "${DOCKER_RESTART_FAIL:-0}" == "1" ]]; then
+            printf 'Docker restart failed.\n' >&2
+            exit 1
+        fi
+        ;;
 esac
 EOF
 
@@ -343,11 +350,17 @@ NETWORK_MOUNT_FAIL=0 SERVER_AGENT_MOUNT_ROOT="$NETWORK_MOUNT_ROOT" expect_status
     bash "$PROJECT_ROOT/duties/network-mounts.sh"
 grep -q "Successfully mounted network filesystems" "$OUTPUT_FILE" ||
     fail "a recovered network mount did not report success"
+grep -q "^restart container-id$" "$COMMAND_LOG" ||
+    fail "running Docker containers were not restarted after repairing a network mount"
 
+: >"$COMMAND_LOG"
 NETWORK_MOUNT_FAIL=1 SERVER_AGENT_MOUNT_ROOT="$NETWORK_MOUNT_ROOT" expect_status 0 \
     bash "$PROJECT_ROOT/duties/network-mounts.sh"
 grep -q "mounted and responsive" "$OUTPUT_FILE" ||
     fail "a healthy network mount was unnecessarily remounted"
+if grep -q "^restart " "$COMMAND_LOG"; then
+    fail "Docker containers were restarted without repairing a network mount"
+fi
 
 rm -f "$TEST_ROOT/network-mounted"
 : >"$COMMAND_LOG"
@@ -375,6 +388,15 @@ grep -q "local mountpoint contents could not be fully removed" "$OUTPUT_FILE" ||
 if grep -q "^mount " "$COMMAND_LOG"; then
     fail "a network mount was attempted after local mountpoint cleanup failed"
 fi
+
+rm -f "$TEST_ROOT/network-mounted"
+: >"$COMMAND_LOG"
+DOCKER_RESTART_FAIL=1 SERVER_AGENT_MOUNT_ROOT="$NETWORK_MOUNT_ROOT" expect_status 1 \
+    bash "$PROJECT_ROOT/duties/network-mounts.sh"
+grep -q "running Docker containers could not be restarted" "$OUTPUT_FILE" ||
+    fail "a Docker restart failure after mount repair was not reported"
+grep -q "^restart container-id$" "$COMMAND_LOG" ||
+    fail "Docker restart was not attempted after repairing a network mount"
 
 cat >"$BIN_DIR/curl" <<'EOF'
 #!/usr/bin/env bash
