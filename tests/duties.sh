@@ -288,15 +288,24 @@ grep -q "No new kernel or filesystem errors" "$OUTPUT_FILE" ||
 cat >"$BIN_DIR/findmnt" <<'EOF'
 #!/usr/bin/env bash
 if [[ "$*" == *"--fstab"* ]]; then
-    printf '/hillbox/media nfs defaults\n'
+    printf '%s/media nfs defaults\n' "$NETWORK_MOUNT_ROOT"
 elif [[ "$*" == *"--mountpoint"* ]]; then
     [[ -f "$TEST_ROOT/network-mounted" ]] || exit 1
     if [[ "$*" == *"FSTYPE"* ]]; then
         printf 'nfs\n'
     else
-        printf '/hillbox/media\n'
+        printf '%s/media\n' "$NETWORK_MOUNT_ROOT"
     fi
 fi
+EOF
+cat >"$BIN_DIR/find" <<'EOF'
+#!/usr/bin/env bash
+printf 'find %s\n' "$*" >>"$COMMAND_LOG"
+if [[ "${FIND_DELETE_FAIL:-0}" == "1" && "$*" == *"-delete"* ]]; then
+    printf 'Local files could not be deleted.\n' >&2
+    exit 1
+fi
+command -p find "$@"
 EOF
 cat >"$BIN_DIR/mount" <<'EOF'
 #!/usr/bin/env bash
@@ -317,35 +326,55 @@ cat >"$BIN_DIR/stat" <<'EOF'
 EOF
 cat >"$BIN_DIR/mkdir" <<'EOF'
 #!/usr/bin/env bash
-if [[ "$*" == *"/hillbox"* ]]; then
-    exit 0
-fi
 command -p mkdir "$@"
 EOF
 
+NETWORK_MOUNT_ROOT="$TEST_ROOT/network-mounts"
+export NETWORK_MOUNT_ROOT
+network_mount="$NETWORK_MOUNT_ROOT/media"
 rm -f "$TEST_ROOT/network-mounted"
 : >"$COMMAND_LOG"
-NETWORK_MOUNT_FAIL=1 expect_status 1 \
+NETWORK_MOUNT_FAIL=1 SERVER_AGENT_MOUNT_ROOT="$NETWORK_MOUNT_ROOT" expect_status 1 \
     bash "$PROJECT_ROOT/duties/network-mounts.sh"
 grep -q "not mounted and mount attempt failed" "$OUTPUT_FILE" ||
     fail "a failed network mount did not explain the failure"
 
-NETWORK_MOUNT_FAIL=0 expect_status 0 \
+NETWORK_MOUNT_FAIL=0 SERVER_AGENT_MOUNT_ROOT="$NETWORK_MOUNT_ROOT" expect_status 0 \
     bash "$PROJECT_ROOT/duties/network-mounts.sh"
 grep -q "Successfully mounted network filesystems" "$OUTPUT_FILE" ||
     fail "a recovered network mount did not report success"
 
-NETWORK_MOUNT_FAIL=1 expect_status 0 \
+NETWORK_MOUNT_FAIL=1 SERVER_AGENT_MOUNT_ROOT="$NETWORK_MOUNT_ROOT" expect_status 0 \
     bash "$PROJECT_ROOT/duties/network-mounts.sh"
 grep -q "mounted and responsive" "$OUTPUT_FILE" ||
     fail "a healthy network mount was unnecessarily remounted"
 
 rm -f "$TEST_ROOT/network-mounted"
 : >"$COMMAND_LOG"
-NETWORK_MOUNT_FAIL=1 SERVER_AGENT_TRIAL=1 expect_status 0 \
+NETWORK_MOUNT_FAIL=1 SERVER_AGENT_TRIAL=1 \
+    SERVER_AGENT_MOUNT_ROOT="$NETWORK_MOUNT_ROOT" expect_status 0 \
     bash "$PROJECT_ROOT/duties/network-mounts.sh"
 [[ ! -s "$COMMAND_LOG" ]] ||
     fail "a candidate trial attempted to change network mounts"
+
+touch "$network_mount/local-file"
+NETWORK_MOUNT_FAIL=0 SERVER_AGENT_MOUNT_ROOT="$NETWORK_MOUNT_ROOT" expect_status 0 \
+    bash "$PROJECT_ROOT/duties/network-mounts.sh"
+[[ ! -e "$network_mount/local-file" ]] ||
+    fail "local mountpoint contents were not deleted before mounting"
+grep -q "find $network_mount -xdev -depth -mindepth 1 -delete" "$COMMAND_LOG" ||
+    fail "local mountpoint cleanup was not constrained to its filesystem"
+
+rm -f "$TEST_ROOT/network-mounted"
+touch "$network_mount/local-file"
+: >"$COMMAND_LOG"
+FIND_DELETE_FAIL=1 SERVER_AGENT_MOUNT_ROOT="$NETWORK_MOUNT_ROOT" expect_status 1 \
+    bash "$PROJECT_ROOT/duties/network-mounts.sh"
+grep -q "local mountpoint contents could not be fully removed" "$OUTPUT_FILE" ||
+    fail "a failed local mountpoint cleanup did not explain the failure"
+if grep -q "^mount " "$COMMAND_LOG"; then
+    fail "a network mount was attempted after local mountpoint cleanup failed"
+fi
 
 cat >"$BIN_DIR/curl" <<'EOF'
 #!/usr/bin/env bash

@@ -2,12 +2,12 @@
 
 set -uo pipefail
 
-readonly MOUNT_ROOT="/hillbox"
+readonly MOUNT_ROOT="${SERVER_AGENT_MOUNT_ROOT:-/hillbox}"
 readonly HEALTH_TIMEOUT="10s"
 readonly MOUNT_TIMEOUT="30s"
 readonly UNMOUNT_TIMEOUT="30s"
 
-for command in findmnt mount stat timeout umount; do
+for command in find findmnt mount stat timeout umount; do
     if ! command -v "$command" >/dev/null 2>&1; then
         printf 'Required network-mount command is missing: %s\n' "$command" >&2
         exit 1
@@ -90,9 +90,12 @@ ${output:-The unmount timed out or returned no details.}")
             failures+=("$target: mountpoint directory could not be created.")
             continue
         fi
-    elif [[ -n "$(find "$target" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
-        failures+=("$target: mountpoint contains local files; refusing to hide them with a network mount.")
-        continue
+    else
+        if ! output=$(find "$target" -xdev -depth -mindepth 1 -delete 2>&1); then
+            failures+=("$target: local mountpoint contents could not be fully removed.
+${output:-The cleanup returned no details.}")
+            continue
+        fi
     fi
 
     if ! output=$(timeout --signal=TERM --kill-after=5s "$MOUNT_TIMEOUT" \
